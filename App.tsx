@@ -1,6 +1,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { initRideDatabase } from './src/database/rideDatabase';
+import {
+  initRideDatabase,
+  saveRide,
+  getSavedRides,
+} from './src/database/rideDatabase';
 import * as Location from 'expo-location';
 import {
   View,
@@ -25,6 +29,18 @@ export default function App() {
   const [accuracy, setAccuracy] = useState<number | null>(null);
   const [currentSpeed, setCurrentSpeed] = useState(0);
 
+  const [distanceKm, setDistanceKm] = useState(0);
+  const [totalDistance, setTotalDistance] = useState(0);
+  const [maxSpeed, setMaxSpeed] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+
+  const startTimeRef = useRef<number | null>(null);
+  const lastLocationRef =
+    useRef<Location.LocationObjectCoords | null>(null);
+
+  const distanceRef = useRef(0);
+  const maxSpeedRef = useRef(0);
+
   const locationSubscription =
     useRef<Location.LocationSubscription | null>(null);
 
@@ -36,10 +52,21 @@ export default function App() {
       if (permission.status !== 'granted') {
         Alert.alert(
           'Permission Required',
-          'Please allow location access to track your ride.'
+          'Please allow location access.'
         );
         return;
       }
+
+      // Reset current running session
+      distanceRef.current = 0;
+      maxSpeedRef.current = 0;
+      lastLocationRef.current = null;
+
+      setDistanceKm(0);
+      setMaxSpeed(0);
+      setDurationSeconds(0);
+
+      startTimeRef.current = Date.now();
 
       const subscription = await Location.watchPositionAsync(
         {
@@ -48,12 +75,53 @@ export default function App() {
           distanceInterval: 2,
         },
         (location) => {
-          setLatitude(location.coords.latitude);
-          setLongitude(location.coords.longitude);
-          setAccuracy(location.coords.accuracy);
+          const coords = location.coords;
 
-          const speed = location.coords.speed ?? 0;
-          setCurrentSpeed(Math.max(0, speed * 3.6));
+          // Ignore inaccurate GPS readings
+          if (
+            coords.accuracy !== null &&
+            coords.accuracy > 30
+          ) {
+            return;
+          }
+
+          setLatitude(coords.latitude);
+          setLongitude(coords.longitude);
+          setAccuracy(coords.accuracy);
+
+          // Calculate distance from previous GPS location
+          const previousLocation = lastLocationRef.current;
+
+          if (previousLocation) {
+            const segmentDistance = calculateDistance(
+              previousLocation.latitude,
+              previousLocation.longitude,
+              coords.latitude,
+              coords.longitude
+            );
+
+            // Ignore unusually large GPS jumps
+            if (segmentDistance <= 0.1) {
+              distanceRef.current += segmentDistance;
+              setDistanceKm(distanceRef.current);
+            }
+          }
+
+          lastLocationRef.current = coords;
+
+          // Calculate speed
+          const speed = Math.max(
+            0,
+            (coords.speed ?? 0) * 3.6
+          );
+
+          setCurrentSpeed(speed);
+
+          // Calculate maximum speed
+          if (speed > maxSpeedRef.current) {
+            maxSpeedRef.current = speed;
+            setMaxSpeed(speed);
+          }
         }
       );
 
@@ -65,11 +133,71 @@ export default function App() {
     }
   };
 
-  const stopTracking = () => {
+  const stopTracking = async () => {
     locationSubscription.current?.remove();
     locationSubscription.current = null;
+
     setIsTracking(false);
+
+    if (startTimeRef.current === null) {
+      return;
+    }
+
+    const duration = Math.floor(
+      (Date.now() - startTimeRef.current) / 1000
+    );
+
+    const distance = distanceRef.current;
+
+    const averageSpeed =
+      duration > 0
+        ? (distance / duration) * 3600
+        : 0;
+
+    try {
+      await saveRide({
+        recorded_at: new Date(
+          startTimeRef.current
+        ).toISOString(),
+
+        distance_km: distance,
+
+        duration_seconds: duration,
+
+        average_speed: averageSpeed,
+
+        max_speed: maxSpeedRef.current,
+      });
+
+      // Refresh lifetime distance from database
+      const rides = await getSavedRides();
+
+      const total = rides.reduce(
+        (sum, ride) => sum + ride.distance_km,
+        0
+      );
+
+      setTotalDistance(total);
+
+      Alert.alert(
+        'Run Saved Successfully!',
+        `Distance: ${distance.toFixed(2)} km\nDuration: ${duration} seconds\nAverage Speed: ${averageSpeed.toFixed(2)} km/h`
+      );
+
+    } catch (error) {
+      Alert.alert(
+        'Database Error',
+        'Could not save your running session: ' + String(error)
+      );
+    }
+
+    startTimeRef.current = null;
   };
+
+  const liveAverageSpeed =
+    durationSeconds > 0
+      ? (distanceKm / durationSeconds) * 3600
+      : 0;
 
   useEffect(() => {
     return () => {
@@ -78,9 +206,50 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-  initRideDatabase()
-    .then(() => console.log('TrackMate database ready'))
-    .catch((error) => console.log('Database error:', error));
+    if (!isTracking) return;
+
+    const timer = setInterval(() => {
+      if (startTimeRef.current !== null) {
+        const elapsed = Math.floor(
+          (Date.now() - startTimeRef.current) / 1000
+        );
+
+        setDurationSeconds(elapsed);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isTracking]);
+
+  // useEffect(() => {
+  //   initRideDatabase()
+  //     .then(() => console.log('TrackMate database ready'))
+  //     .catch((error) => console.log('Database error:', error));
+  // }, []);
+useEffect(() => {
+  const loadDatabase = async () => {
+    try {
+      await initRideDatabase();
+
+      const rides = await getSavedRides();
+
+      console.log('Saved rides:', rides);
+
+      const total = rides.reduce(
+        (sum, ride) => sum + ride.distance_km,
+        0
+      );
+
+      setTotalDistance(total);
+
+      console.log('Total distance:', total);
+
+    } catch (error) {
+      console.log('Database error:', error);
+    }
+  };
+
+  loadDatabase();
 }, []);
 
   return (
@@ -108,7 +277,7 @@ export default function App() {
           <View style={styles.distanceCard}>
             <Text style={styles.cardLabel}>TOTAL DISTANCE</Text>
             <View style={styles.distanceRow}>
-              <Text style={styles.distance}>0.00</Text>
+              <Text style={styles.distance}>{totalDistance.toFixed(2)}</Text>
               <Text style={styles.unit}> km</Text>
             </View>
             <Text style={styles.muted}>Your next adventure starts here</Text>
@@ -141,6 +310,14 @@ export default function App() {
               <Text style={styles.statValue}>00:00:00</Text>
               <Text style={styles.statLabel}>Duration</Text>
             </View>
+          </View>
+
+          <View style={styles.statCard}>
+            <Text style={styles.statIcon}>📍</Text>
+            <Text style={styles.statValue}>
+              {distanceKm.toFixed(2)} km
+            </Text>
+            <Text style={styles.statLabel}>Current run distance</Text>
           </View>
 
           {/* Start Button */}
@@ -187,6 +364,44 @@ export default function App() {
   );
 }
 
+function calculateDistance(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) {
+  const earthRadius = 6371;
+
+  const toRadians = (value: number) =>
+    (value * Math.PI) / 180;
+
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) *
+    Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) ** 2;
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadius * c;
+}
+
+function formatDuration(seconds: number) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+
+  return [
+    hours,
+    minutes,
+    remainingSeconds,
+  ]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
+}
 const styles = StyleSheet.create({
   container: {
     flex: 1,
