@@ -1,6 +1,12 @@
+
 import * as SQLite from 'expo-sqlite';
 
 const database = SQLite.openDatabaseAsync('trackmate.db');
+
+export type RouteCoordinate = {
+  latitude: number;
+  longitude: number;
+};
 
 export type Ride = {
   id: number;
@@ -9,6 +15,7 @@ export type Ride = {
   duration_seconds: number;
   average_speed: number;
   max_speed: number;
+  route_coordinates: string | null;
 };
 
 export async function initRideDatabase() {
@@ -21,23 +28,51 @@ export async function initRideDatabase() {
       distance_km REAL NOT NULL,
       duration_seconds INTEGER NOT NULL,
       average_speed REAL NOT NULL,
-      max_speed REAL NOT NULL
+      max_speed REAL NOT NULL,
+      route_coordinates TEXT
     );
   `);
+
+  // Safely upgrade existing databases
+  const columns = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(rides)'
+  );
+
+  const hasRouteColumn = columns.some(
+    column => column.name === 'route_coordinates'
+  );
+
+  if (!hasRouteColumn) {
+    await db.execAsync(`
+      ALTER TABLE rides ADD COLUMN route_coordinates TEXT;
+    `);
+  }
 }
 
-export async function saveRide(ride: Omit<Ride, 'id'>) {
+export async function saveRide(
+  ride: Omit<Ride, 'id' | 'route_coordinates'> & {
+    route_coordinates?: string | null;
+  }
+) {
   const db = await database;
 
   await db.runAsync(
     `INSERT INTO rides
-    (recorded_at, distance_km, duration_seconds, average_speed, max_speed)
-    VALUES (?, ?, ?, ?, ?)`,
+    (
+      recorded_at,
+      distance_km,
+      duration_seconds,
+      average_speed,
+      max_speed,
+      route_coordinates
+    )
+    VALUES (?, ?, ?, ?, ?, ?)`,
     ride.recorded_at,
     ride.distance_km,
     ride.duration_seconds,
     ride.average_speed,
-    ride.max_speed
+    ride.max_speed,
+    ride.route_coordinates ?? null
   );
 }
 
