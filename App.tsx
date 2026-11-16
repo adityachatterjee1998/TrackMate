@@ -37,6 +37,10 @@ export default function App() {
   const [maxSpeed, setMaxSpeed] = useState(0);
   const [durationSeconds, setDurationSeconds] = useState(0);
 
+  const routeCoordinatesRef = useRef<
+    { latitude: number; longitude: number }[]
+  >([]);
+
   const startTimeRef = useRef<number | null>(null);
   const lastLocationRef =
     useRef<Location.LocationObjectCoords | null>(null);
@@ -64,6 +68,7 @@ export default function App() {
       distanceRef.current = 0;
       maxSpeedRef.current = 0;
       lastLocationRef.current = null;
+      routeCoordinatesRef.current = [];
 
       setDistanceKm(0);
       setMaxSpeed(0);
@@ -91,6 +96,11 @@ export default function App() {
           setLatitude(coords.latitude);
           setLongitude(coords.longitude);
           setAccuracy(coords.accuracy);
+
+          routeCoordinatesRef.current.push({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+          });
 
           // Calculate distance from previous GPS location
           const previousLocation = lastLocationRef.current;
@@ -140,7 +150,11 @@ export default function App() {
     locationSubscription.current?.remove();
     locationSubscription.current = null;
 
-    setIsTracking(false);
+    route_coordinates: JSON.stringify(
+      routeCoordinatesRef.current
+    ),
+
+      setIsTracking(false);
 
     if (startTimeRef.current === null) {
       return;
@@ -170,6 +184,10 @@ export default function App() {
         average_speed: averageSpeed,
 
         max_speed: maxSpeedRef.current,
+
+        route_coordinates: JSON.stringify(
+          routeCoordinatesRef.current
+        ),
       });
 
       // Refresh lifetime distance from database
@@ -366,7 +384,11 @@ export default function App() {
           </View>
         </>
       ) : (
-        <RunningHistoryScreen />
+        <RunningHistoryScreen
+          onRidePress={(ride) => {
+            console.log('Selected ride:', ride);
+          }}
+        />
       )}
 
       {/* Bottom Navigation */}
@@ -555,34 +577,34 @@ const styles = StyleSheet.create({
     marginTop: 25,
   },
   appContainer: {
-  flex: 1,
-  backgroundColor: '#101827',
-},
+    flex: 1,
+    backgroundColor: '#101827',
+  },
 
-bottomNav: {
-  flexDirection: 'row',
-  backgroundColor: '#1E293B',
-  paddingVertical: 15,
-  paddingBottom: 25,
-  justifyContent: 'space-around',
-  borderTopWidth: 1,
-  borderTopColor: '#334155',
-},
+  bottomNav: {
+    flexDirection: 'row',
+    backgroundColor: '#1E293B',
+    paddingVertical: 15,
+    paddingBottom: 25,
+    justifyContent: 'space-around',
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+  },
 
-navButton: {
-  flex: 1,
-  alignItems: 'center',
-},
+  navButton: {
+    flex: 1,
+    alignItems: 'center',
+  },
 
-navText: {
-  color: '#94A3B8',
-  fontSize: 14,
-  fontWeight: '600',
-},
+  navText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
 
-activeNavText: {
-  color: '#4ADE80',
-  fontSize: 14,
-  fontWeight: 'bold',
-},
+  activeNavText: {
+    color: '#4ADE80',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
 });
