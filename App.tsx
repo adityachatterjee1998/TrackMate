@@ -1,10 +1,12 @@
 
 import React, { useEffect, useRef, useState } from 'react';
+import RunningHistoryScreen from './src/screens/HistoryScreen';
 import {
   initRideDatabase,
   saveRide,
   getSavedRides,
 } from './src/database/rideDatabase';
+
 import * as Location from 'expo-location';
 import {
   View,
@@ -24,6 +26,7 @@ export default function App() {
     );
   };
   const [isTracking, setIsTracking] = useState(false);
+  const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
@@ -253,114 +256,140 @@ export default function App() {
   }, []);
 
   return (
-    <>
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#101827" />
+    <View style={styles.appContainer}>
+      {activeTab === 'home' ? (
+        <>
+          <View style={styles.container}>
+            <StatusBar barStyle="light-content" backgroundColor="#101827" />
 
-        <ScrollView contentContainerStyle={styles.content}>
-          {/* Header */}
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.logo}>TRACKMATE</Text>
-              <Text style={styles.subtitle}>Your journey, your pace.</Text>
-            </View>
-            <Text style={styles.profile}>🚴</Text>
+            <ScrollView contentContainerStyle={styles.content}>
+              {/* Header */}
+              <View style={styles.header}>
+                <View>
+                  <Text style={styles.logo}>TRACKMATE</Text>
+                  <Text style={styles.subtitle}>Your journey, your pace.</Text>
+                </View>
+                <Text style={styles.profile}>🚴</Text>
+              </View>
+
+              {/* Welcome */}
+              <Text style={styles.welcome}>Ready to ride?</Text>
+              <Text style={styles.description}>
+                Every kilometre is a new achievement.
+              </Text>
+
+              {/* Main Distance Card */}
+              <View style={styles.distanceCard}>
+                <Text style={styles.cardLabel}>TOTAL DISTANCE</Text>
+                <View style={styles.distanceRow}>
+                  <Text style={styles.distance}>{totalDistance.toFixed(2)}</Text>
+                  <Text style={styles.unit}> km</Text>
+                </View>
+                <Text style={styles.muted}>Your next adventure starts here</Text>
+              </View>
+
+              {/* Statistics */}
+              <Text style={styles.sectionTitle}>Ride statistics</Text>
+
+              <View style={styles.statsGrid}>
+                <View style={styles.statCard}>
+                  <Text style={styles.statIcon}>⚡</Text>
+                  <Text style={styles.statValue}>{currentSpeed.toFixed(1)} km/h </Text>
+                  <Text style={styles.statLabel}>Current speed</Text>
+                </View>
+
+                <View style={styles.statCard}>
+                  <Text style={styles.statIcon}>🏁</Text>
+                  <Text style={styles.statValue}> {maxSpeed.toFixed(1)} km/h</Text>
+                  <Text style={styles.statLabel}>Maximum speed</Text>
+                </View>
+
+                <View style={styles.statCard}>
+                  <Text style={styles.statIcon}>📊</Text>
+                  <Text style={styles.statValue}>{liveAverageSpeed.toFixed(1)} km/h</Text>
+                  <Text style={styles.statLabel}>Average speed</Text>
+                </View>
+
+                <View style={styles.statCard}>
+                  <Text style={styles.statIcon}>⏱️</Text>
+                  <Text style={styles.statValue}>{formatDuration(durationSeconds)}</Text>
+                  <Text style={styles.statLabel}>Duration</Text>
+                </View>
+              </View>
+
+              <View style={styles.statCard}>
+                <Text style={styles.statIcon}>📍</Text>
+                <Text style={styles.statValue}>
+                  {distanceKm.toFixed(2)} km
+                </Text>
+                <Text style={styles.statLabel}>Current run distance</Text>
+              </View>
+
+              {/* Start Button */}
+              <TouchableOpacity
+                style={styles.startButton}
+                onPress={isTracking ? stopTracking : startTracking}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.startButtonText}>
+                  {isTracking ? '■ STOP TRACKING' : '▶ START RECORDING'}
+                </Text>
+              </TouchableOpacity>
+
+              <Text style={styles.footer}>
+                TRACKMATE • EXPLORE MORE
+              </Text>
+            </ScrollView>
           </View>
-
-          {/* Welcome */}
-          <Text style={styles.welcome}>Ready to ride?</Text>
-          <Text style={styles.description}>
-            Every kilometre is a new achievement.
-          </Text>
-
-          {/* Main Distance Card */}
           <View style={styles.distanceCard}>
-            <Text style={styles.cardLabel}>TOTAL DISTANCE</Text>
-            <View style={styles.distanceRow}>
-              <Text style={styles.distance}>{totalDistance.toFixed(2)}</Text>
-              <Text style={styles.unit}> km</Text>
-            </View>
-            <Text style={styles.muted}>Your next adventure starts here</Text>
-          </View>
+            <Text style={styles.cardLabel}>LIVE GPS INFORMATION</Text>
 
-          {/* Statistics */}
-          <Text style={styles.sectionTitle}>Ride statistics</Text>
-
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Text style={styles.statIcon}>⚡</Text>
-              <Text style={styles.statValue}>{currentSpeed.toFixed(1)} km/h </Text>
-              <Text style={styles.statLabel}>Current speed</Text>
-            </View>
-
-            <View style={styles.statCard}>
-              <Text style={styles.statIcon}>🏁</Text>
-              <Text style={styles.statValue}> {maxSpeed.toFixed(1)} km/h</Text>
-              <Text style={styles.statLabel}>Maximum speed</Text>
-            </View>
-
-            <View style={styles.statCard}>
-              <Text style={styles.statIcon}>📊</Text>
-              <Text style={styles.statValue}>{liveAverageSpeed.toFixed(1)} km/h</Text>
-              <Text style={styles.statLabel}>Average speed</Text>
-            </View>
-
-            <View style={styles.statCard}>
-              <Text style={styles.statIcon}>⏱️</Text>
-              <Text style={styles.statValue}>{formatDuration(durationSeconds)}</Text>
-              <Text style={styles.statLabel}>Duration</Text>
-            </View>
-          </View>
-
-          <View style={styles.statCard}>
-            <Text style={styles.statIcon}>📍</Text>
+            <Text style={styles.statLabel}>Latitude</Text>
             <Text style={styles.statValue}>
-              {distanceKm.toFixed(2)} km
+              {latitude !== null ? latitude.toFixed(6) : 'Waiting for GPS'}
             </Text>
-            <Text style={styles.statLabel}>Current run distance</Text>
+
+            <Text style={styles.statLabel}>Longitude</Text>
+            <Text style={styles.statValue}>
+              {longitude !== null ? longitude.toFixed(6) : 'Waiting for GPS'}
+            </Text>
+
+            <Text style={styles.statLabel}>GPS Accuracy</Text>
+            <Text style={styles.statValue}>
+              {accuracy !== null ? `${accuracy.toFixed(1)} metres` : '--'}
+            </Text>
+
+            <Text style={styles.statLabel}>Current GPS Speed</Text>
+            <Text style={styles.statValue}>
+              {currentSpeed.toFixed(1)} km/h
+            </Text>
           </View>
+        </>
+      ) : (
+        <RunningHistoryScreen />
+      )}
 
-          {/* Start Button */}
-          <TouchableOpacity
-            style={styles.startButton}
-            onPress={isTracking ? stopTracking : startTracking}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.startButtonText}>
-              {isTracking ? '■ STOP TRACKING' : '▶ START RECORDING'}
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={styles.footer}>
-            TRACKMATE • EXPLORE MORE
+      {/* Bottom Navigation */}
+      <View style={styles.bottomNav}>
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => setActiveTab('home')}
+        >
+          <Text style={activeTab === 'home' ? styles.activeNavText : styles.navText}>
+            🏠 Home
           </Text>
-        </ScrollView>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => setActiveTab('history')}
+        >
+          <Text style={activeTab === 'history' ? styles.activeNavText : styles.navText}>
+            📋 History
+          </Text>
+        </TouchableOpacity>
       </View>
-      <View style={styles.distanceCard}>
-        <Text style={styles.cardLabel}>LIVE GPS INFORMATION</Text>
-
-        <Text style={styles.statLabel}>Latitude</Text>
-        <Text style={styles.statValue}>
-          {latitude !== null ? latitude.toFixed(6) : 'Waiting for GPS'}
-        </Text>
-
-        <Text style={styles.statLabel}>Longitude</Text>
-        <Text style={styles.statValue}>
-          {longitude !== null ? longitude.toFixed(6) : 'Waiting for GPS'}
-        </Text>
-
-        <Text style={styles.statLabel}>GPS Accuracy</Text>
-        <Text style={styles.statValue}>
-          {accuracy !== null ? `${accuracy.toFixed(1)} metres` : '--'}
-        </Text>
-
-        <Text style={styles.statLabel}>Current GPS Speed</Text>
-        <Text style={styles.statValue}>
-          {currentSpeed.toFixed(1)} km/h
-        </Text>
-      </View>
-    </>
-
+    </View>
   );
 }
 
@@ -525,4 +554,35 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginTop: 25,
   },
+  appContainer: {
+  flex: 1,
+  backgroundColor: '#101827',
+},
+
+bottomNav: {
+  flexDirection: 'row',
+  backgroundColor: '#1E293B',
+  paddingVertical: 15,
+  paddingBottom: 25,
+  justifyContent: 'space-around',
+  borderTopWidth: 1,
+  borderTopColor: '#334155',
+},
+
+navButton: {
+  flex: 1,
+  alignItems: 'center',
+},
+
+navText: {
+  color: '#94A3B8',
+  fontSize: 14,
+  fontWeight: '600',
+},
+
+activeNavText: {
+  color: '#4ADE80',
+  fontSize: 14,
+  fontWeight: 'bold',
+},
 });
