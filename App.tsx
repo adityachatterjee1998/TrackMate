@@ -226,31 +226,31 @@ export default function App() {
   //     .then(() => console.log('TrackMate database ready'))
   //     .catch((error) => console.log('Database error:', error));
   // }, []);
-useEffect(() => {
-  const loadDatabase = async () => {
-    try {
-      await initRideDatabase();
+  useEffect(() => {
+    const loadDatabase = async () => {
+      try {
+        await initRideDatabase();
 
-      const rides = await getSavedRides();
+        const rides = await getSavedRides();
 
-      console.log('Saved rides:', rides);
+        console.log('Saved rides:', rides);
 
-      const total = rides.reduce(
-        (sum, ride) => sum + ride.distance_km,
-        0
-      );
+        const total = rides.reduce(
+          (sum, ride) => sum + ride.distance_km,
+          0
+        );
 
-      setTotalDistance(total);
+        setTotalDistance(total);
 
-      console.log('Total distance:', total);
+        console.log('Total distance:', total);
 
-    } catch (error) {
-      console.log('Database error:', error);
-    }
-  };
+      } catch (error) {
+        console.log('Database error:', error);
+      }
+    };
 
-  loadDatabase();
-}, []);
+    loadDatabase();
+  }, []);
 
   return (
     <>
@@ -289,25 +289,25 @@ useEffect(() => {
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
               <Text style={styles.statIcon}>⚡</Text>
-              <Text style={styles.statValue}>0.0 km/h</Text>
+              <Text style={styles.statValue}>{currentSpeed.toFixed(1)} km/h </Text>
               <Text style={styles.statLabel}>Current speed</Text>
             </View>
 
             <View style={styles.statCard}>
               <Text style={styles.statIcon}>🏁</Text>
-              <Text style={styles.statValue}>0.0 km/h</Text>
+              <Text style={styles.statValue}> {maxSpeed.toFixed(1)} km/h</Text>
               <Text style={styles.statLabel}>Maximum speed</Text>
             </View>
 
             <View style={styles.statCard}>
               <Text style={styles.statIcon}>📊</Text>
-              <Text style={styles.statValue}>0.0 km/h</Text>
+              <Text style={styles.statValue}>{liveAverageSpeed.toFixed(1)} km/h</Text>
               <Text style={styles.statLabel}>Average speed</Text>
             </View>
 
             <View style={styles.statCard}>
               <Text style={styles.statIcon}>⏱️</Text>
-              <Text style={styles.statValue}>00:00:00</Text>
+              <Text style={styles.statValue}>{formatDuration(durationSeconds)}</Text>
               <Text style={styles.statLabel}>Duration</Text>
             </View>
           </View>
