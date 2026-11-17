@@ -17,13 +17,26 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.aditya_chatterjee.TrackMate"
+      "package": "com.aditya_chatterjee.TrackMate",
+      "config": {
+    "googleMaps": {
+      "apiKey": "AIzaSyDWtE_SzIKvWNrMaTrthuftcackCN9VeH8"
+    }
+  }
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraProguardRules": "-keep class * extends androidx.room.RoomDatabase { <init>(); }\n-keep class * extends androidx.work.InputMerger { <init>(); }"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

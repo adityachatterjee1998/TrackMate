@@ -171,12 +171,9 @@ const RideDetailsScreen: React.FC<RideDetailsScreenProps> = ({
           {routeCoordinates.length > 0 && mapRegion ? (
             <View style={styles.mapContainer}>
               <MapView
-                style={styles.map}
+                 style={styles.map}
                 initialRegion={mapRegion}
-                region={mapRegion}
                 showsUserLocation={false}
-                showsCompass
-                showsScale
               >
                 {/* Complete route */}
                 <Polyline
