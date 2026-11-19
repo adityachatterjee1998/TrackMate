@@ -1,8 +1,11 @@
 
+import {
+  BACKGROUND_LOCATION_TASK
+} from './src/services/backgroundLocation';
 import React, { useEffect, useRef, useState } from 'react';
 
+
 import RunningHistoryScreen from './src/screens/HistoryScreen';
-import './src/services/backgroundLocation';
 
 import RideDetailsScreen, {
   type Ride,
@@ -12,6 +15,11 @@ import {
   initRideDatabase,
   saveRide,
   getSavedRides,
+} from './src/database/rideDatabase';
+import {
+  saveActiveRecording,
+  getActiveRecording,
+  clearActiveRecording
 } from './src/database/rideDatabase';
 
 import * as Location from 'expo-location';
@@ -63,177 +71,259 @@ export default function App() {
     useRef<Location.LocationSubscription | null>(null);
 
   // Start GPS tracking
-  const startTracking = async () => {
-    try {
-      const permission =
-        await Location.requestForegroundPermissionsAsync();
 
-      if (permission.status !== 'granted') {
-        Alert.alert(
-          'Permission Required',
-          'Please allow location access.'
-        );
-        return;
-      }
+const startTracking = async () => {
+  try {
+    const permission =
+      await Location.requestForegroundPermissionsAsync();
 
-      // Reset current running session
-      distanceRef.current = 0;
-      maxSpeedRef.current = 0;
-      lastLocationRef.current = null;
-      routeCoordinatesRef.current = [];
+    if (permission.status !== 'granted') {
+      Alert.alert(
+        'Permission Required',
+        'Please allow location access.'
+      );
+      return;
+    }
 
-      setDistanceKm(0);
-      setMaxSpeed(0);
-      setDurationSeconds(0);
-      setCurrentSpeed(0);
+    // Request background location permission
+    const backgroundPermission =
+      await Location.requestBackgroundPermissionsAsync();
 
-      startTimeRef.current = Date.now();
+    if (backgroundPermission.status !== 'granted') {
+      Alert.alert(
+        'Background Permission Required',
+        'Please allow background location access to record your route when the screen is locked.'
+      );
+      return;
+    }
 
-      const subscription = await Location.watchPositionAsync(
+    // Reset current running session
+    distanceRef.current = 0;
+    maxSpeedRef.current = 0;
+    lastLocationRef.current = null;
+    routeCoordinatesRef.current = [];
+
+    setDistanceKm(0);
+    setMaxSpeed(0);
+    setDurationSeconds(0);
+    setCurrentSpeed(0);
+
+    startTimeRef.current = Date.now();
+
+    // Initialize SQLite active recording
+    await saveActiveRecording({
+      start_time_ms: startTimeRef.current,
+      distance_km: 0,
+      max_speed: 0,
+      route_coordinates: '[]',
+      last_latitude: null,
+      last_longitude: null,
+      last_location_timestamp: null,
+      is_active: 1,
+    });
+
+    // Start background GPS tracking
+    const backgroundStarted =
+      await Location.hasStartedLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK
+      );
+
+    if (!backgroundStarted) {
+      await Location.startLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK,
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 2000,
           distanceInterval: 2,
-        },
-        (location) => {
-          const coords = location.coords;
+          pausesUpdatesAutomatically: false,
 
-          // Ignore inaccurate GPS readings
-          if (
-            coords.accuracy !== null &&
-            coords.accuracy > 30
-          ) {
-            return;
-          }
-
-          setLatitude(coords.latitude);
-          setLongitude(coords.longitude);
-          setAccuracy(coords.accuracy);
-
-          // Save GPS coordinates
-          routeCoordinatesRef.current.push({
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-          });
-
-          // Calculate distance from previous location
-          const previousLocation = lastLocationRef.current;
-
-          if (previousLocation) {
-            const segmentDistance = calculateDistance(
-              previousLocation.latitude,
-              previousLocation.longitude,
-              coords.latitude,
-              coords.longitude
-            );
-
-            // Ignore unusually large GPS jumps
-            if (segmentDistance <= 0.1) {
-              distanceRef.current += segmentDistance;
-              setDistanceKm(distanceRef.current);
-            }
-          }
-
-          lastLocationRef.current = coords;
-
-          // Calculate GPS speed
-          const rawSpeed = coords.speed ?? 0;
-          const speed = rawSpeed * 3.6;
-
-          // Filter unreliable GPS speed
-          const isValidSpeed =
-            coords.accuracy !== null &&
-            coords.accuracy <= 20 &&
-            speed >= 1 &&
-            speed <= 40;
-
-          if (isValidSpeed) {
-            setCurrentSpeed(speed);
-
-            if (speed > maxSpeedRef.current) {
-              maxSpeedRef.current = speed;
-              setMaxSpeed(speed);
-            }
-          } else {
-            setCurrentSpeed(0);
-          }
+          foregroundService: {
+            notificationTitle: 'TrackMate is recording',
+            notificationBody:
+              'Your running or cycling route is being recorded.',
+            notificationColor: '#2196F3',
+          },
         }
       );
-
-      locationSubscription.current = subscription;
-      setIsTracking(true);
-
-    } catch (error) {
-      Alert.alert('GPS Error', String(error));
     }
-  };
+
+    // Keep existing foreground tracking for live UI updates
+    const subscription = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 2000,
+        distanceInterval: 2,
+      },
+      (location) => {
+        const coords = location.coords;
+
+        if (
+          coords.accuracy !== null &&
+          coords.accuracy > 30
+        ) {
+          return;
+        }
+
+        setLatitude(coords.latitude);
+        setLongitude(coords.longitude);
+        setAccuracy(coords.accuracy);
+
+        routeCoordinatesRef.current.push({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+
+        const previousLocation = lastLocationRef.current;
+
+        if (previousLocation) {
+          const segmentDistance = calculateDistance(
+            previousLocation.latitude,
+            previousLocation.longitude,
+            coords.latitude,
+            coords.longitude
+          );
+
+          if (segmentDistance <= 0.1) {
+            distanceRef.current += segmentDistance;
+            setDistanceKm(distanceRef.current);
+          }
+        }
+
+        lastLocationRef.current = coords;
+
+        const rawSpeed = coords.speed ?? 0;
+        const speed = rawSpeed * 3.6;
+
+        const isValidSpeed =
+          coords.accuracy !== null &&
+          coords.accuracy <= 20 &&
+          speed >= 1 &&
+          speed <= 40;
+
+        if (isValidSpeed) {
+          setCurrentSpeed(speed);
+
+          if (speed > maxSpeedRef.current) {
+            maxSpeedRef.current = speed;
+            setMaxSpeed(speed);
+          }
+        } else {
+          setCurrentSpeed(0);
+        }
+      }
+    );
+
+    locationSubscription.current = subscription;
+    setIsTracking(true);
+
+  } catch (error) {
+    Alert.alert(
+      'GPS Error',
+      String(error)
+    );
+  }
+};
+
 
   // Stop GPS tracking and save ride
-  const stopTracking = async () => {
+
+const stopTracking = async () => {
+  try {
+    // Stop foreground GPS tracking
     locationSubscription.current?.remove();
     locationSubscription.current = null;
+
+    // Stop background GPS tracking
+    const backgroundStarted =
+      await Location.hasStartedLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK
+      );
+
+    if (backgroundStarted) {
+      await Location.stopLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK
+      );
+    }
 
     setIsTracking(false);
     setCurrentSpeed(0);
 
-    if (startTimeRef.current === null) {
+    // Retrieve the authoritative recording from SQLite
+    const recording = await getActiveRecording();
+
+    if (!recording && startTimeRef.current === null) {
       return;
     }
 
+    const startTime =
+      recording?.start_time_ms ?? startTimeRef.current;
+
     const duration = Math.floor(
-      (Date.now() - startTimeRef.current) / 1000
+      (Date.now() - startTime) / 1000
     );
 
-    const distance = distanceRef.current;
+    // Prefer background recording data
+    const distance =
+      recording?.distance_km ?? distanceRef.current;
+
+    const maxSpeed =
+      recording?.max_speed ?? maxSpeedRef.current;
+
+    const routeCoordinates = recording
+      ? recording.route_coordinates
+      : JSON.stringify(routeCoordinatesRef.current);
 
     const averageSpeed =
       duration > 0
         ? (distance / duration) * 3600
         : 0;
 
-    try {
-      await saveRide({
-        recorded_at: new Date(
-          startTimeRef.current
-        ).toISOString(),
+    // Save completed ride
+    await saveRide({
+      recorded_at: new Date(startTime).toISOString(),
 
-        distance_km: distance,
+      distance_km: distance,
 
-        duration_seconds: duration,
+      duration_seconds: duration,
 
-        average_speed: averageSpeed,
+      average_speed: averageSpeed,
 
-        max_speed: maxSpeedRef.current,
+      max_speed: maxSpeed,
 
-        route_coordinates: JSON.stringify(
-          routeCoordinatesRef.current
-        ),
-      });
+      route_coordinates: routeCoordinates,
+    });
 
-      // Refresh lifetime distance from database
-      const rides = await getSavedRides();
+    // Clear unfinished recording after successful save
+    await clearActiveRecording();
 
-      const total = rides.reduce(
-        (sum, ride) => sum + ride.distance_km,
-        0
-      );
+    // Refresh lifetime distance
+    const rides = await getSavedRides();
 
-      setTotalDistance(total);
+    const total = rides.reduce(
+      (sum, ride) => sum + ride.distance_km,
+      0
+    );
 
-      Alert.alert(
-        'Run Saved Successfully!',
-        `Distance: ${distance.toFixed(2)} km\nDuration: ${duration} seconds\nAverage Speed: ${averageSpeed.toFixed(2)} km/h`
-      );
+    setTotalDistance(total);
+    setDistanceKm(distance);
+    setMaxSpeed(maxSpeed);
+    setDurationSeconds(duration);
 
-    } catch (error) {
-      Alert.alert(
-        'Database Error',
-        'Could not save your running session: ' + String(error)
-      );
-    }
+    Alert.alert(
+      'Run Saved Successfully!',
+      `Distance: ${distance.toFixed(2)} km\nDuration: ${duration} seconds\nAverage Speed: ${averageSpeed.toFixed(2)} km/h`
+    );
 
     startTimeRef.current = null;
-  };
+
+  } catch (error) {
+    Alert.alert(
+      'Recording Error',
+      'Could not stop or save your recording: ' + String(error)
+    );
+  }
+};
+
 
   // Live average speed
   const liveAverageSpeed =

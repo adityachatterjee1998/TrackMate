@@ -36,6 +36,16 @@ export default {
 
     plugins: [
       "expo-sqlite",
+
+      [
+        "expo-location",
+        {
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
+        }
+      ],
+
       [
         "expo-build-properties",
         {
