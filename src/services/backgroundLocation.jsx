@@ -11,11 +11,12 @@ export const BACKGROUND_LOCATION_TASK =
   'TRACKMATE_BACKGROUND_LOCATION';
 
 // GPS filtering configuration
-const GPS_MAX_ACCURACY = 20;
-const GPS_MIN_MOVEMENT = 3;
-const GPS_MAX_SPEED = 40;
+const GPS_MAX_ACCURACY = 20; // metres
+const GPS_MIN_MOVEMENT = 3; // metres
+const GPS_MAX_SPEED = 40; // km/h
 
-// Calculate distance between two GPS coordinates
+// Calculate distance between two GPS coordinates.
+// Returns distance in kilometres.
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const earthRadius = 6371;
 
@@ -27,11 +28,14 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRadians(lat1)) *
-      Math.cos(toRadians(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+    Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) ** 2;
 
-  return earthRadius * 2 *
-    Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return (
+    earthRadius *
+    2 *
+    Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  );
 }
 
 // Validate GPS coordinates
@@ -65,12 +69,16 @@ TaskManager.defineTask(
       // Get active recording from SQLite
       const recording = await getActiveRecording();
 
-      if (!recording || recording.is_active !== 1) {
+      if (
+        !recording ||
+        recording.is_active !== 1 ||
+        recording.is_paused === 1
+      ) {
         return;
       }
 
-      let distance = recording.distance_km;
-      let maxSpeed = recording.max_speed;
+      let distance = recording.distance_km ?? 0;
+      let maxSpeed = recording.max_speed ?? 0;
 
       let lastLatitude = recording.last_latitude;
       let lastLongitude = recording.last_longitude;
@@ -95,52 +103,38 @@ TaskManager.defineTask(
       for (const location of locations) {
         const coords = location.coords;
 
-        // --------------------------------
         // STEP 1: Accuracy filtering
-        // --------------------------------
-
         if (
-          coords.accuracy === null ||
           !Number.isFinite(coords.accuracy) ||
+          coords.accuracy < 0 ||
           coords.accuracy > GPS_MAX_ACCURACY
         ) {
           continue;
         }
 
-        // --------------------------------
         // STEP 2: Coordinate validation
-        // --------------------------------
-
         if (!isValidCoordinates(coords)) {
           continue;
         }
 
-        // --------------------------------
         // STEP 3: Timestamp validation
-        // --------------------------------
-
         const currentTimestamp = location.timestamp;
 
-        if (
-          !Number.isFinite(currentTimestamp)
-        ) {
+        if (!Number.isFinite(currentTimestamp)) {
           continue;
         }
 
         if (
-          lastTimestamp !== null &&
+          Number.isFinite(lastTimestamp) &&
           currentTimestamp <= lastTimestamp
         ) {
           continue;
         }
 
-        // --------------------------------
         // STEP 4: First valid GPS point
-        // --------------------------------
-
         if (
-          lastLatitude === null ||
-          lastLongitude === null
+          !Number.isFinite(lastLatitude) ||
+          !Number.isFinite(lastLongitude)
         ) {
           lastLatitude = coords.latitude;
           lastLongitude = coords.longitude;
@@ -154,63 +148,61 @@ TaskManager.defineTask(
           continue;
         }
 
-        // --------------------------------
         // STEP 5: Calculate movement
-        // --------------------------------
-
-        const segmentDistance = calculateDistance(
+        const segmentDistanceKm = calculateDistance(
           lastLatitude,
           lastLongitude,
           coords.latitude,
           coords.longitude
         );
 
-        const elapsedSeconds = Math.max(
-          (currentTimestamp - lastTimestamp) / 1000,
-          1
-        );
+        // Convert kilometres to metres for GPS filtering
+        const segmentDistanceMeters =
+          segmentDistanceKm * 1000;
 
-        // --------------------------------
-        // STEP 6: Reject unrealistic jumps
-        // --------------------------------
+        const elapsedSeconds = Number.isFinite(lastTimestamp)
+          ? Math.max(
+            (currentTimestamp - lastTimestamp) / 1000,
+            1
+          )
+          : 1;
 
+        // STEP 6: Reject unrealistic GPS jumps
         const previousAccuracy = 10;
 
-        const allowedDistance = Math.max(
+        const allowedDistanceMeters = Math.max(
           20,
           elapsedSeconds * 12 +
-            previousAccuracy * 0.5 +
-            coords.accuracy * 0.5
+          previousAccuracy * 0.5 +
+          coords.accuracy * 0.5
         );
 
-        if (segmentDistance > allowedDistance) {
+        if (
+          segmentDistanceMeters > allowedDistanceMeters
+        ) {
           console.log(
             'Background GPS jump rejected:',
-            segmentDistance.toFixed(2),
+            segmentDistanceMeters.toFixed(2),
             'metres'
           );
 
           continue;
         }
 
-        // --------------------------------
         // STEP 7: Ignore GPS drift
-        // --------------------------------
-
-        if (segmentDistance < GPS_MIN_MOVEMENT) {
+        if (
+          segmentDistanceMeters < GPS_MIN_MOVEMENT
+        ) {
           continue;
         }
 
-        // --------------------------------
         // STEP 8: Accept valid movement
-        // --------------------------------
-
-        distance += segmentDistance / 1000;
+        // Distance is already in kilometres
+        distance += segmentDistanceKm;
 
         // Update maximum speed
         if (
           coords.accuracy <= 15 &&
-          coords.speed !== null &&
           Number.isFinite(coords.speed)
         ) {
           const speed = coords.speed * 3.6;
@@ -235,10 +227,7 @@ TaskManager.defineTask(
         lastTimestamp = currentTimestamp;
       }
 
-      // --------------------------------
       // STEP 9: Save recording to SQLite
-      // --------------------------------
-
       await saveActiveRecording({
         start_time_ms: recording.start_time_ms,
         distance_km: distance,
@@ -248,6 +237,9 @@ TaskManager.defineTask(
         last_longitude: lastLongitude,
         last_location_timestamp: lastTimestamp,
         is_active: 1,
+        is_paused: recording.is_paused,
+        total_paused_ms: recording.total_paused_ms,
+        pause_started_at_ms: recording.pause_started_at_ms,
       });
 
       console.log(

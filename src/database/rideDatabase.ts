@@ -28,6 +28,9 @@ export type ActiveRecording = {
   last_longitude: number | null;
   last_location_timestamp: number | null;
   is_active: number;
+  is_paused: number;
+  total_paused_ms: number;
+  pause_started_at_ms: number | null;
 };
 
 export async function initRideDatabase() {
@@ -53,7 +56,10 @@ export async function initRideDatabase() {
       last_latitude REAL,
       last_longitude REAL,
       last_location_timestamp INTEGER,
-      is_active INTEGER NOT NULL DEFAULT 1
+      is_active INTEGER NOT NULL DEFAULT 1,
+      is_paused INTEGER NOT NULL DEFAULT 0,
+      total_paused_ms INTEGER NOT NULL DEFAULT 0,
+      pause_started_at_ms INTEGER
     );
   `);
 
@@ -70,6 +76,44 @@ export async function initRideDatabase() {
     await db.execAsync(`
       ALTER TABLE rides ADD COLUMN route_coordinates TEXT;
     `);
+  }
+
+  // Safely upgrade active recording database
+  const activeColumns = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(active_recording)'
+  );
+
+  const hasPausedColumn = activeColumns.some(
+    column => column.name === 'is_paused'
+  );
+
+  if (!hasPausedColumn) {
+    await db.execAsync(`
+    ALTER TABLE active_recording
+    ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0;
+  `);
+  }
+
+  const hasTotalPausedColumn = activeColumns.some(
+    column => column.name === 'total_paused_ms'
+  );
+
+  if (!hasTotalPausedColumn) {
+    await db.execAsync(`
+    ALTER TABLE active_recording
+    ADD COLUMN total_paused_ms INTEGER NOT NULL DEFAULT 0;
+  `);
+  }
+
+  const hasPauseStartedColumn = activeColumns.some(
+    column => column.name === 'pause_started_at_ms'
+  );
+
+  if (!hasPauseStartedColumn) {
+    await db.execAsync(`
+    ALTER TABLE active_recording
+    ADD COLUMN pause_started_at_ms INTEGER;
+  `);
   }
 }
 
@@ -126,9 +170,12 @@ export async function saveActiveRecording(
       last_latitude,
       last_longitude,
       last_location_timestamp,
-      is_active
+      is_active,
+      is_paused,
+      total_paused_ms,
+      pause_started_at_ms
     )
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       start_time_ms = excluded.start_time_ms,
       distance_km = excluded.distance_km,
@@ -137,7 +184,10 @@ export async function saveActiveRecording(
       last_latitude = excluded.last_latitude,
       last_longitude = excluded.last_longitude,
       last_location_timestamp = excluded.last_location_timestamp,
-      is_active = excluded.is_active`,
+      is_active = excluded.is_active,
+      is_paused = excluded.is_paused,
+      total_paused_ms = excluded.total_paused_ms,
+      pause_started_at_ms = excluded.pause_started_at_ms`,
     recording.start_time_ms,
     recording.distance_km,
     recording.max_speed,
@@ -145,9 +195,13 @@ export async function saveActiveRecording(
     recording.last_latitude,
     recording.last_longitude,
     recording.last_location_timestamp,
-    recording.is_active
+    recording.is_active,
+    recording.is_paused,
+    recording.total_paused_ms,
+    recording.pause_started_at_ms
   );
 }
+
 
 // Retrieve unfinished recording
 export async function getActiveRecording():

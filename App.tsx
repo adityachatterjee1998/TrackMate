@@ -9,6 +9,7 @@ import {
   StatusBar,
   Alert,
   ScrollView,
+  AppState
 } from 'react-native';
 
 import * as Location from 'expo-location';
@@ -36,11 +37,15 @@ export default function App() {
   // App navigation
   const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
 
+
   // Selected ride
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
 
   // Tracking states
   const [isTracking, setIsTracking] = useState(false);
+  const isPausedRef = useRef(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const resetGPSAfterResumeRef = useRef(false);
 
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -137,6 +142,9 @@ export default function App() {
         last_longitude: null,
         last_location_timestamp: null,
         is_active: 1,
+        is_paused: 0,
+        total_paused_ms: 0,
+        pause_started_at_ms: null,
       });
 
       // Start background GPS tracking
@@ -172,6 +180,12 @@ export default function App() {
           distanceInterval: 2,
         },
         (location) => {
+
+          // Ignore GPS updates while recording is paused
+          if (isPausedRef.current) {
+            return;
+          }
+
           const coords = location.coords;
 
           // --------------------------------
@@ -226,7 +240,7 @@ export default function App() {
               const smoothedSpeed =
                 smoothedSpeedRef.current +
                 SPEED_SMOOTHING_FACTOR *
-                  (speedKmh - smoothedSpeedRef.current);
+                (speedKmh - smoothedSpeedRef.current);
 
               smoothedSpeedRef.current =
                 smoothedSpeed < 0.8 ? 0 : smoothedSpeed;
@@ -244,10 +258,29 @@ export default function App() {
               }
             }
           }
+          // Reset GPS reference after resuming
+          if (resetGPSAfterResumeRef.current) {
+            lastLocationRef.current = coords;
+            lastLocationTimestampRef.current = currentTimestamp;
 
+            resetGPSAfterResumeRef.current = false;
+
+            routeCoordinatesRef.current.push({
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+            });
+
+            setLatitude(coords.latitude);
+            setLongitude(coords.longitude);
+            setAccuracy(coords.accuracy);
+
+            return;
+          }
           // --------------------------------
           // STEP 4: First valid GPS location
           // --------------------------------
+
+
 
           const previousLocation = lastLocationRef.current;
 
@@ -301,8 +334,8 @@ export default function App() {
           const allowedDistanceMeters = Math.max(
             20,
             elapsedSeconds * 12 +
-              previousAccuracy * 0.5 +
-              coords.accuracy * 0.5
+            previousAccuracy * 0.5 +
+            coords.accuracy * 0.5
           );
 
           if (segmentDistanceMeters > allowedDistanceMeters) {
@@ -362,6 +395,112 @@ export default function App() {
     }
   };
 
+  const pauseTracking = async () => {
+    try {
+      // Stop foreground GPS watcher
+      locationSubscription.current?.remove();
+      locationSubscription.current = null;
+
+      // Stop background GPS
+      const backgroundStarted =
+        await Location.hasStartedLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK
+        );
+
+      if (backgroundStarted) {
+        await Location.stopLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK
+        );
+      }
+
+      // Save paused status
+      const recording = await getActiveRecording();
+
+      if (recording) {
+        await saveActiveRecording({
+          ...recording,
+          is_paused: 1,
+          is_active: 1,
+        });
+      }
+
+      isPausedRef.current = true;
+      setIsPaused(true);
+      setCurrentSpeed(0);
+
+      console.log('Recording paused');
+
+    } catch (error) {
+      Alert.alert('Pause Error', String(error));
+    }
+  };
+
+  const resumeTracking = async () => {
+    try {
+      const recording = await getActiveRecording();
+
+      if (!recording) {
+        Alert.alert('Error', 'No active recording found.');
+        return;
+      }
+
+      // Reset GPS references to avoid counting paused movement
+      lastLocationRef.current = null;
+      lastLocationTimestampRef.current = null;
+
+      // Start background GPS again
+      await Location.startLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK,
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 2000,
+          distanceInterval: 2,
+          pausesUpdatesAutomatically: false,
+
+          foregroundService: {
+            notificationTitle: 'TrackMate is recording',
+            notificationBody:
+              'Your running or cycling route is being recorded.',
+            notificationColor: '#2196F3',
+          },
+        }
+      );
+
+      // Mark recording as active and unpaused
+      await saveActiveRecording({
+        ...recording,
+        is_paused: 0,
+        is_active: 1,
+        last_latitude: null,
+        last_longitude: null,
+        last_location_timestamp: null,
+      });
+
+      // Reset foreground GPS references
+      isPausedRef.current = false;
+      setIsPaused(false);
+
+      // Start foreground GPS watcher
+      const subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 2000,
+          distanceInterval: 2,
+        },
+        (location) => {
+          // Existing GPS processing will be handled in the next step.
+        }
+      );
+
+      locationSubscription.current = subscription;
+
+      console.log('Recording resumed');
+
+    } catch (error) {
+      Alert.alert('Resume Error', String(error));
+    }
+  };
+
   // Stop GPS tracking and save ride
   const stopTracking = async () => {
     try {
@@ -403,15 +542,37 @@ export default function App() {
       );
 
       // Prefer background recording data
+      const backgroundDistance =
+        recording?.distance_km ?? 0;
+
       const distance =
-        recording?.distance_km ?? distanceRef.current;
+        backgroundDistance > 0
+          ? backgroundDistance
+          : distanceRef.current;
 
-      const maximumSpeed =
-        recording?.max_speed ?? maxSpeedRef.current;
+      const maximumSpeed = Math.max(
+        recording?.max_speed ?? 0,
+        maxSpeedRef.current
+      );
 
-      const routeCoordinates = recording
-        ? recording.route_coordinates
-        : JSON.stringify(routeCoordinatesRef.current);
+      // Validate background route before using it
+      let backgroundRoute: {
+        latitude: number;
+        longitude: number;
+      }[] = [];
+
+      try {
+        backgroundRoute = recording?.route_coordinates
+          ? JSON.parse(recording.route_coordinates)
+          : [];
+      } catch {
+        backgroundRoute = [];
+      }
+
+      const routeCoordinates =
+        backgroundRoute.length > 1
+          ? JSON.stringify(backgroundRoute)
+          : JSON.stringify(routeCoordinatesRef.current);
 
       const averageSpeed =
         duration > 0
@@ -455,7 +616,7 @@ export default function App() {
       Alert.alert(
         'Recording Error',
         'Could not stop or save your recording: ' +
-          String(error)
+        String(error)
       );
     }
   };
@@ -472,6 +633,89 @@ export default function App() {
       locationSubscription.current?.remove();
     };
   }, []);
+
+  // Synchronize UI with background GPS recording
+  useEffect(() => {
+    if (!isTracking) return;
+
+    const subscription = AppState.addEventListener(
+      'change',
+      async (nextAppState) => {
+
+        if (nextAppState !== 'active') return;
+
+        try {
+          console.log('App resumed. Refreshing active recording...');
+
+          const recording = await getActiveRecording();
+
+          if (!recording || recording.is_active !== 1) {
+            return;
+          }
+
+          // Synchronize distance
+          distanceRef.current = recording.distance_km;
+          setDistanceKm(recording.distance_km);
+
+          // Synchronize maximum speed
+          maxSpeedRef.current = recording.max_speed;
+          setMaxSpeed(recording.max_speed);
+
+          // Synchronize duration
+          startTimeRef.current = recording.start_time_ms;
+
+          const elapsed = Math.floor(
+            (Date.now() - recording.start_time_ms) / 1000
+          );
+
+          setDurationSeconds(elapsed);
+
+          // Synchronize route coordinates
+          try {
+            routeCoordinatesRef.current = JSON.parse(
+              recording.route_coordinates || '[]'
+            );
+          } catch {
+            console.log('Could not restore route coordinates');
+          }
+
+          // Restore the last accepted GPS position
+          if (
+            recording.last_latitude !== null &&
+            recording.last_longitude !== null
+          ) {
+            lastLocationRef.current = {
+              latitude: recording.last_latitude,
+              longitude: recording.last_longitude,
+              accuracy: 10,
+              altitude: null,
+              altitudeAccuracy: null,
+              heading: null,
+              speed: null,
+            };
+
+            lastLocationTimestampRef.current =
+              recording.last_location_timestamp;
+          }
+
+          // Background task does not maintain live current speed
+          setCurrentSpeed(0);
+
+          console.log(
+            'Recording synchronized:',
+            recording.distance_km.toFixed(3),
+            'km'
+          );
+
+        } catch (error) {
+          console.log('Recording sync error:', error);
+        }
+      }
+    );
+
+    return () => subscription.remove();
+
+  }, [isTracking]);
 
   // Update running duration every second
   useEffect(() => {
@@ -785,8 +1029,8 @@ function calculateDistance(
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRadians(lat1)) *
-      Math.cos(toRadians(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+    Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) ** 2;
 
   const c =
     2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
