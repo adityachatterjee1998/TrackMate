@@ -34,9 +34,9 @@ import {
 } from './src/database/rideDatabase';
 
 export default function App() {
+
   // App navigation
   const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
-
 
   // Selected ride
   const [selectedRide, setSelectedRide] = useState<Ride | null>(null);
@@ -45,7 +45,12 @@ export default function App() {
   const [isTracking, setIsTracking] = useState(false);
   const isPausedRef = useRef(false);
   const [isPaused, setIsPaused] = useState(false);
+
   const resetGPSAfterResumeRef = useRef(false);
+
+  // Pause duration references
+  const totalPausedMsRef = useRef(0);
+  const pauseStartedAtMsRef = useRef<number | null>(null);
 
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -83,19 +88,293 @@ export default function App() {
   const GPS_MAX_SPEED = 40;
   const SPEED_SMOOTHING_FACTOR = 0.25;
 
+  // --------------------------------
+  // Calculate active recording duration
+  // --------------------------------
+
+  const calculateActiveDuration = (
+    startTime: number,
+    totalPausedMs: number,
+    pauseStartedAt: number | null,
+    currentlyPaused: boolean
+  ) => {
+
+    const currentTime = Date.now();
+
+    const currentPauseDuration =
+      currentlyPaused && pauseStartedAt !== null
+        ? currentTime - pauseStartedAt
+        : 0;
+
+    const activeDurationMs =
+      currentTime -
+      startTime -
+      totalPausedMs -
+      currentPauseDuration;
+
+    return Math.max(
+      0,
+      Math.floor(activeDurationMs / 1000)
+    );
+  };
+
+  // --------------------------------
+  // Handle GPS location updates
+  // --------------------------------
+
+  const handleLocationUpdate = (
+    location: Location.LocationObject
+  ) => {
+
+    // Ignore GPS updates while paused
+    if (isPausedRef.current) {
+      return;
+    }
+
+    const coords = location.coords;
+
+    // --------------------------------
+    // STEP 1: Accuracy filtering
+    // --------------------------------
+
+    if (
+      coords.accuracy === null ||
+      coords.accuracy > GPS_MAX_ACCURACY
+    ) {
+      return;
+    }
+
+    if (
+      !Number.isFinite(coords.latitude) ||
+      !Number.isFinite(coords.longitude)
+    ) {
+      return;
+    }
+
+    // --------------------------------
+    // STEP 2: Timestamp filtering
+    // --------------------------------
+
+    const currentTimestamp = location.timestamp;
+
+    const previousTimestamp =
+      lastLocationTimestampRef.current;
+
+    if (
+      previousTimestamp !== null &&
+      currentTimestamp <= previousTimestamp
+    ) {
+      return;
+    }
+
+    // --------------------------------
+    // STEP 3: Speed smoothing
+    // --------------------------------
+
+    const rawSpeed = coords.speed;
+
+    if (
+      coords.accuracy <= 15 &&
+      rawSpeed !== null &&
+      Number.isFinite(rawSpeed) &&
+      rawSpeed >= 0
+    ) {
+
+      const speedKmh = rawSpeed * 3.6;
+
+      if (speedKmh <= GPS_MAX_SPEED) {
+
+        const smoothedSpeed =
+          smoothedSpeedRef.current +
+          SPEED_SMOOTHING_FACTOR *
+          (speedKmh - smoothedSpeedRef.current);
+
+        smoothedSpeedRef.current =
+          smoothedSpeed < 0.8 ? 0 : smoothedSpeed;
+
+        setCurrentSpeed(smoothedSpeedRef.current);
+
+        // Update maximum speed
+        if (
+          smoothedSpeedRef.current > maxSpeedRef.current
+        ) {
+
+          maxSpeedRef.current =
+            smoothedSpeedRef.current;
+
+          setMaxSpeed(smoothedSpeedRef.current);
+        }
+      }
+    }
+
+    // --------------------------------
+    // Reset GPS reference after resuming
+    // --------------------------------
+
+    if (resetGPSAfterResumeRef.current) {
+
+      lastLocationRef.current = coords;
+
+      lastLocationTimestampRef.current =
+        currentTimestamp;
+
+      resetGPSAfterResumeRef.current = false;
+
+      routeCoordinatesRef.current.push({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      });
+
+      setLatitude(coords.latitude);
+      setLongitude(coords.longitude);
+      setAccuracy(coords.accuracy);
+
+      return;
+    }
+
+    // --------------------------------
+    // STEP 4: First valid GPS location
+    // --------------------------------
+
+    const previousLocation = lastLocationRef.current;
+
+    if (!previousLocation) {
+
+      lastLocationRef.current = coords;
+
+      lastLocationTimestampRef.current =
+        currentTimestamp;
+
+      routeCoordinatesRef.current.push({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      });
+
+      setLatitude(coords.latitude);
+      setLongitude(coords.longitude);
+      setAccuracy(coords.accuracy);
+
+      return;
+    }
+
+    // --------------------------------
+    // STEP 5: Calculate movement
+    // --------------------------------
+
+    const segmentDistanceKm = calculateDistance(
+      previousLocation.latitude,
+      previousLocation.longitude,
+      coords.latitude,
+      coords.longitude
+    );
+
+    const segmentDistanceMeters =
+      segmentDistanceKm * 1000;
+
+    const previousTimestampValue =
+      lastLocationTimestampRef.current ?? currentTimestamp;
+
+    const elapsedSeconds = Math.max(
+      (currentTimestamp - previousTimestampValue) / 1000,
+      1
+    );
+
+    // --------------------------------
+    // STEP 6: Reject unrealistic jumps
+    // --------------------------------
+
+    const previousAccuracy =
+      previousLocation.accuracy ?? 10;
+
+    const allowedDistanceMeters = Math.max(
+      20,
+      elapsedSeconds * 12 +
+      previousAccuracy * 0.5 +
+      coords.accuracy * 0.5
+    );
+
+    if (segmentDistanceMeters > allowedDistanceMeters) {
+
+      console.log(
+        'GPS jump rejected:',
+        segmentDistanceMeters.toFixed(2),
+        'metres'
+      );
+
+      return;
+    }
+
+    // --------------------------------
+    // STEP 7: Ignore GPS drift
+    // --------------------------------
+
+    if (segmentDistanceMeters < GPS_MIN_MOVEMENT) {
+      return;
+    }
+
+    // --------------------------------
+    // STEP 8: Accept valid GPS movement
+    // --------------------------------
+
+    distanceRef.current += segmentDistanceKm;
+
+    setDistanceKm(distanceRef.current);
+
+    lastLocationRef.current = coords;
+
+    lastLocationTimestampRef.current =
+      currentTimestamp;
+
+    // Add accepted location to route
+    routeCoordinatesRef.current.push({
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+    });
+
+    // Update displayed GPS information
+    setLatitude(coords.latitude);
+    setLongitude(coords.longitude);
+    setAccuracy(coords.accuracy);
+  };
+
+  // --------------------------------
+  // Start foreground GPS watcher
+  // --------------------------------
+
+  const startForegroundGPSWatcher = async () => {
+
+    const subscription = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 2000,
+        distanceInterval: 2,
+      },
+      handleLocationUpdate
+    );
+
+    locationSubscription.current = subscription;
+  };
+
+  // --------------------------------
   // Start GPS tracking
+  // --------------------------------
+
   const startTracking = async () => {
+
     try {
+
       if (isTracking) return;
 
       const permission =
         await Location.requestForegroundPermissionsAsync();
 
       if (permission.status !== 'granted') {
+
         Alert.alert(
           'Permission Required',
           'Please allow location access.'
         );
+
         return;
       }
 
@@ -104,12 +383,23 @@ export default function App() {
         await Location.requestBackgroundPermissionsAsync();
 
       if (backgroundPermission.status !== 'granted') {
+
         Alert.alert(
           'Background Permission Required',
           'Please allow background location access to record your route when the screen is locked.'
         );
+
         return;
       }
+
+      // Reset pause states
+      isPausedRef.current = false;
+      setIsPaused(false);
+
+      resetGPSAfterResumeRef.current = false;
+
+      totalPausedMsRef.current = 0;
+      pauseStartedAtMsRef.current = null;
 
       // Reset GPS references
       distanceRef.current = 0;
@@ -130,19 +420,27 @@ export default function App() {
       setLongitude(null);
       setAccuracy(null);
 
-      startTimeRef.current = Date.now();
+      const startTime = Date.now();
+
+      startTimeRef.current = startTime;
 
       // Initialize active recording
       await saveActiveRecording({
-        start_time_ms: startTimeRef.current,
+
+        start_time_ms: startTime,
+
         distance_km: 0,
         max_speed: 0,
+
         route_coordinates: '[]',
+
         last_latitude: null,
         last_longitude: null,
         last_location_timestamp: null,
+
         is_active: 1,
         is_paused: 0,
+
         total_paused_ms: 0,
         pause_started_at_ms: null,
       });
@@ -154,240 +452,40 @@ export default function App() {
         );
 
       if (!backgroundStarted) {
+
         await Location.startLocationUpdatesAsync(
           BACKGROUND_LOCATION_TASK,
           {
+
             accuracy: Location.Accuracy.High,
+
             timeInterval: 2000,
             distanceInterval: 2,
+
             pausesUpdatesAutomatically: false,
 
             foregroundService: {
+
               notificationTitle: 'TrackMate is recording',
+
               notificationBody:
                 'Your running or cycling route is being recorded.',
+
               notificationColor: '#2196F3',
             },
           }
         );
       }
 
-      // Foreground GPS watcher
-      const subscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 2000,
-          distanceInterval: 2,
-        },
-        (location) => {
-
-          // Ignore GPS updates while recording is paused
-          if (isPausedRef.current) {
-            return;
-          }
-
-          const coords = location.coords;
-
-          // --------------------------------
-          // STEP 1: Accuracy filtering
-          // --------------------------------
-
-          if (
-            coords.accuracy === null ||
-            coords.accuracy > GPS_MAX_ACCURACY
-          ) {
-            return;
-          }
-
-          if (
-            !Number.isFinite(coords.latitude) ||
-            !Number.isFinite(coords.longitude)
-          ) {
-            return;
-          }
-
-          // --------------------------------
-          // STEP 2: Timestamp filtering
-          // --------------------------------
-
-          const currentTimestamp = location.timestamp;
-
-          const previousTimestamp =
-            lastLocationTimestampRef.current;
-
-          if (
-            previousTimestamp !== null &&
-            currentTimestamp <= previousTimestamp
-          ) {
-            return;
-          }
-
-          // --------------------------------
-          // STEP 3: Speed smoothing
-          // --------------------------------
-
-          const rawSpeed = coords.speed;
-
-          if (
-            coords.accuracy <= 15 &&
-            rawSpeed !== null &&
-            Number.isFinite(rawSpeed) &&
-            rawSpeed >= 0
-          ) {
-            const speedKmh = rawSpeed * 3.6;
-
-            if (speedKmh <= GPS_MAX_SPEED) {
-              const smoothedSpeed =
-                smoothedSpeedRef.current +
-                SPEED_SMOOTHING_FACTOR *
-                (speedKmh - smoothedSpeedRef.current);
-
-              smoothedSpeedRef.current =
-                smoothedSpeed < 0.8 ? 0 : smoothedSpeed;
-
-              setCurrentSpeed(smoothedSpeedRef.current);
-
-              // Update maximum speed
-              if (
-                smoothedSpeedRef.current > maxSpeedRef.current
-              ) {
-                maxSpeedRef.current =
-                  smoothedSpeedRef.current;
-
-                setMaxSpeed(smoothedSpeedRef.current);
-              }
-            }
-          }
-          // Reset GPS reference after resuming
-          if (resetGPSAfterResumeRef.current) {
-            lastLocationRef.current = coords;
-            lastLocationTimestampRef.current = currentTimestamp;
-
-            resetGPSAfterResumeRef.current = false;
-
-            routeCoordinatesRef.current.push({
-              latitude: coords.latitude,
-              longitude: coords.longitude,
-            });
-
-            setLatitude(coords.latitude);
-            setLongitude(coords.longitude);
-            setAccuracy(coords.accuracy);
-
-            return;
-          }
-          // --------------------------------
-          // STEP 4: First valid GPS location
-          // --------------------------------
-
-
-
-          const previousLocation = lastLocationRef.current;
-
-          if (!previousLocation) {
-            lastLocationRef.current = coords;
-
-            lastLocationTimestampRef.current =
-              currentTimestamp;
-
-            routeCoordinatesRef.current.push({
-              latitude: coords.latitude,
-              longitude: coords.longitude,
-            });
-
-            setLatitude(coords.latitude);
-            setLongitude(coords.longitude);
-            setAccuracy(coords.accuracy);
-
-            return;
-          }
-
-          // --------------------------------
-          // STEP 5: Calculate movement
-          // --------------------------------
-
-          const segmentDistanceKm = calculateDistance(
-            previousLocation.latitude,
-            previousLocation.longitude,
-            coords.latitude,
-            coords.longitude
-          );
-
-          // Convert kilometres to metres for GPS filtering
-          const segmentDistanceMeters = segmentDistanceKm * 1000;
-
-          const previousTimestampValue =
-            lastLocationTimestampRef.current ?? currentTimestamp;
-
-          const elapsedSeconds = Math.max(
-            (currentTimestamp - previousTimestampValue) / 1000,
-            1
-          );
-
-          // --------------------------------
-          // STEP 6: Reject unrealistic jumps
-          // --------------------------------
-
-          const previousAccuracy =
-            previousLocation.accuracy ?? 10;
-
-          const allowedDistanceMeters = Math.max(
-            20,
-            elapsedSeconds * 12 +
-            previousAccuracy * 0.5 +
-            coords.accuracy * 0.5
-          );
-
-          if (segmentDistanceMeters > allowedDistanceMeters) {
-            console.log(
-              'GPS jump rejected:',
-              segmentDistanceMeters.toFixed(2),
-              'metres'
-            );
-
-            return;
-          }
-
-          // --------------------------------
-          // STEP 7: Ignore GPS drift
-          // --------------------------------
-
-          if (segmentDistanceMeters < GPS_MIN_MOVEMENT) {
-            return;
-          }
-
-          // --------------------------------
-          // STEP 8: Accept valid GPS movement
-          // --------------------------------
-
-          // Distance is already in kilometres
-          distanceRef.current += segmentDistanceKm;
-
-          setDistanceKm(distanceRef.current);
-
-          lastLocationRef.current = coords;
-
-          lastLocationTimestampRef.current =
-            currentTimestamp;
-
-          // Add accepted location to route
-          routeCoordinatesRef.current.push({
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-          });
-
-          // Update displayed GPS information
-          setLatitude(coords.latitude);
-          setLongitude(coords.longitude);
-          setAccuracy(coords.accuracy);
-        }
-      );
-
-      locationSubscription.current = subscription;
+      // Start foreground GPS watcher
+      await startForegroundGPSWatcher();
 
       setIsTracking(true);
 
+      console.log('Recording started');
+
     } catch (error) {
+
       Alert.alert(
         'GPS Error',
         String(error)
@@ -395,10 +493,24 @@ export default function App() {
     }
   };
 
+  // --------------------------------
+  // Pause tracking
+  // --------------------------------
+
   const pauseTracking = async () => {
+
     try {
+
+      // Set paused immediately
+      isPausedRef.current = true;
+
+      const pauseTime = Date.now();
+
+      pauseStartedAtMsRef.current = pauseTime;
+
       // Stop foreground GPS watcher
       locationSubscription.current?.remove();
+
       locationSubscription.current = null;
 
       // Stop background GPS
@@ -408,6 +520,7 @@ export default function App() {
         );
 
       if (backgroundStarted) {
+
         await Location.stopLocationUpdatesAsync(
           BACKGROUND_LOCATION_TASK
         );
@@ -417,95 +530,164 @@ export default function App() {
       const recording = await getActiveRecording();
 
       if (recording) {
+
         await saveActiveRecording({
+
           ...recording,
+
           is_paused: 1,
           is_active: 1,
+
+          pause_started_at_ms: pauseTime,
         });
       }
 
-      isPausedRef.current = true;
       setIsPaused(true);
+
       setCurrentSpeed(0);
+
+      smoothedSpeedRef.current = 0;
 
       console.log('Recording paused');
 
     } catch (error) {
-      Alert.alert('Pause Error', String(error));
+
+      Alert.alert(
+        'Pause Error',
+        String(error)
+      );
     }
   };
 
+  // --------------------------------
+  // Resume tracking
+  // --------------------------------
+
   const resumeTracking = async () => {
+
     try {
+
       const recording = await getActiveRecording();
 
       if (!recording) {
-        Alert.alert('Error', 'No active recording found.');
+
+        Alert.alert(
+          'Error',
+          'No active recording found.'
+        );
+
         return;
       }
 
-      // Reset GPS references to avoid counting paused movement
+      const resumeTime = Date.now();
+
+      // Calculate paused duration
+      const currentPauseDuration =
+        recording.pause_started_at_ms !== null
+          ? Math.max(
+              0,
+              resumeTime - recording.pause_started_at_ms
+            )
+          : 0;
+
+      const updatedTotalPausedMs =
+        recording.total_paused_ms + currentPauseDuration;
+
+      // Reset GPS references
       lastLocationRef.current = null;
+
       lastLocationTimestampRef.current = null;
 
-      // Start background GPS again
-      await Location.startLocationUpdatesAsync(
-        BACKGROUND_LOCATION_TASK,
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 2000,
-          distanceInterval: 2,
-          pausesUpdatesAutomatically: false,
+      resetGPSAfterResumeRef.current = true;
 
-          foregroundService: {
-            notificationTitle: 'TrackMate is recording',
-            notificationBody:
-              'Your running or cycling route is being recorded.',
-            notificationColor: '#2196F3',
-          },
-        }
-      );
-
-      // Mark recording as active and unpaused
+      // Save resumed recording
       await saveActiveRecording({
+
         ...recording,
+
         is_paused: 0,
         is_active: 1,
+
+        total_paused_ms: updatedTotalPausedMs,
+
+        pause_started_at_ms: null,
+
         last_latitude: null,
         last_longitude: null,
         last_location_timestamp: null,
       });
 
-      // Reset foreground GPS references
+      // Update local pause references
+      totalPausedMsRef.current = updatedTotalPausedMs;
+
+      pauseStartedAtMsRef.current = null;
+
+      // Start background GPS again
+      const backgroundStarted =
+        await Location.hasStartedLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK
+        );
+
+      if (!backgroundStarted) {
+
+        await Location.startLocationUpdatesAsync(
+          BACKGROUND_LOCATION_TASK,
+          {
+
+            accuracy: Location.Accuracy.High,
+
+            timeInterval: 2000,
+            distanceInterval: 2,
+
+            pausesUpdatesAutomatically: false,
+
+            foregroundService: {
+
+              notificationTitle: 'TrackMate is recording',
+
+              notificationBody:
+                'Your running or cycling route is being recorded.',
+
+              notificationColor: '#2196F3',
+            },
+          }
+        );
+      }
+
+      // Update pause state
       isPausedRef.current = false;
+
       setIsPaused(false);
 
-      // Start foreground GPS watcher
-      const subscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 2000,
-          distanceInterval: 2,
-        },
-        (location) => {
-          // Existing GPS processing will be handled in the next step.
-        }
-      );
+      smoothedSpeedRef.current = 0;
 
-      locationSubscription.current = subscription;
+      setCurrentSpeed(0);
+
+      // Restart foreground GPS watcher
+      await startForegroundGPSWatcher();
 
       console.log('Recording resumed');
 
     } catch (error) {
-      Alert.alert('Resume Error', String(error));
+
+      Alert.alert(
+        'Resume Error',
+        String(error)
+      );
     }
   };
 
+  // --------------------------------
   // Stop GPS tracking and save ride
+  // --------------------------------
+
   const stopTracking = async () => {
+
     try {
+
       // Stop foreground GPS
       locationSubscription.current?.remove();
+
       locationSubscription.current = null;
 
       // Stop background GPS
@@ -515,12 +697,14 @@ export default function App() {
         );
 
       if (backgroundStarted) {
+
         await Location.stopLocationUpdatesAsync(
           BACKGROUND_LOCATION_TASK
         );
       }
 
       setIsTracking(false);
+
       setCurrentSpeed(0);
 
       // Retrieve SQLite recording
@@ -537,8 +721,24 @@ export default function App() {
         return;
       }
 
-      const duration = Math.floor(
-        (Date.now() - startTime) / 1000
+      const totalPausedMs =
+        recording?.total_paused_ms ??
+        totalPausedMsRef.current;
+
+      const pauseStartedAt =
+        recording?.pause_started_at_ms ??
+        pauseStartedAtMsRef.current;
+
+      const currentlyPaused =
+        recording?.is_paused === 1 ||
+        isPausedRef.current;
+
+      // Calculate duration excluding paused time
+      const duration = calculateActiveDuration(
+        startTime,
+        totalPausedMs,
+        pauseStartedAt,
+        currentlyPaused
       );
 
       // Prefer background recording data
@@ -562,10 +762,13 @@ export default function App() {
       }[] = [];
 
       try {
+
         backgroundRoute = recording?.route_coordinates
           ? JSON.parse(recording.route_coordinates)
           : [];
+
       } catch {
+
         backgroundRoute = [];
       }
 
@@ -581,16 +784,33 @@ export default function App() {
 
       // Save completed ride
       await saveRide({
+
         recorded_at: new Date(startTime).toISOString(),
+
         distance_km: distance,
+
         duration_seconds: duration,
+
         average_speed: averageSpeed,
+
         max_speed: maximumSpeed,
+
         route_coordinates: routeCoordinates,
       });
 
       // Clear unfinished recording
       await clearActiveRecording();
+
+      // Reset pause references
+      isPausedRef.current = false;
+
+      setIsPaused(false);
+
+      totalPausedMsRef.current = 0;
+
+      pauseStartedAtMsRef.current = null;
+
+      resetGPSAfterResumeRef.current = false;
 
       // Refresh lifetime distance
       const rides = await getSavedRides();
@@ -601,8 +821,11 @@ export default function App() {
       );
 
       setTotalDistance(total);
+
       setDistanceKm(distance);
+
       setMaxSpeed(maximumSpeed);
+
       setDurationSeconds(duration);
 
       Alert.alert(
@@ -612,7 +835,10 @@ export default function App() {
 
       startTimeRef.current = null;
 
+      console.log('Recording stopped and saved');
+
     } catch (error) {
+
       Alert.alert(
         'Recording Error',
         'Could not stop or save your recording: ' +
@@ -621,21 +847,33 @@ export default function App() {
     }
   };
 
+  // --------------------------------
   // Live average speed
+  // --------------------------------
+
   const liveAverageSpeed =
     durationSeconds > 0
       ? (distanceKm / durationSeconds) * 3600
       : 0;
 
+  // --------------------------------
   // Cleanup GPS subscription
+  // --------------------------------
+
   useEffect(() => {
+
     return () => {
       locationSubscription.current?.remove();
     };
+
   }, []);
 
+  // --------------------------------
   // Synchronize UI with background GPS recording
+  // --------------------------------
+
   useEffect(() => {
+
     if (!isTracking) return;
 
     const subscription = AppState.addEventListener(
@@ -645,7 +883,10 @@ export default function App() {
         if (nextAppState !== 'active') return;
 
         try {
-          console.log('App resumed. Refreshing active recording...');
+
+          console.log(
+            'App resumed. Refreshing active recording...'
+          );
 
           const recording = await getActiveRecording();
 
@@ -653,30 +894,52 @@ export default function App() {
             return;
           }
 
+          // Synchronize pause information
+          totalPausedMsRef.current =
+            recording.total_paused_ms;
+
+          pauseStartedAtMsRef.current =
+            recording.pause_started_at_ms;
+
+          isPausedRef.current =
+            recording.is_paused === 1;
+
+          setIsPaused(recording.is_paused === 1);
+
           // Synchronize distance
           distanceRef.current = recording.distance_km;
+
           setDistanceKm(recording.distance_km);
 
           // Synchronize maximum speed
           maxSpeedRef.current = recording.max_speed;
+
           setMaxSpeed(recording.max_speed);
 
           // Synchronize duration
           startTimeRef.current = recording.start_time_ms;
 
-          const elapsed = Math.floor(
-            (Date.now() - recording.start_time_ms) / 1000
+          const elapsed = calculateActiveDuration(
+            recording.start_time_ms,
+            recording.total_paused_ms,
+            recording.pause_started_at_ms,
+            recording.is_paused === 1
           );
 
           setDurationSeconds(elapsed);
 
           // Synchronize route coordinates
           try {
+
             routeCoordinatesRef.current = JSON.parse(
               recording.route_coordinates || '[]'
             );
+
           } catch {
-            console.log('Could not restore route coordinates');
+
+            console.log(
+              'Could not restore route coordinates'
+            );
           }
 
           // Restore the last accepted GPS position
@@ -684,18 +947,32 @@ export default function App() {
             recording.last_latitude !== null &&
             recording.last_longitude !== null
           ) {
+
             lastLocationRef.current = {
+
               latitude: recording.last_latitude,
+
               longitude: recording.last_longitude,
+
               accuracy: 10,
+
               altitude: null,
+
               altitudeAccuracy: null,
+
               heading: null,
+
               speed: null,
             };
 
             lastLocationTimestampRef.current =
               recording.last_location_timestamp;
+
+          } else {
+
+            lastLocationRef.current = null;
+
+            lastLocationTimestampRef.current = null;
           }
 
           // Background task does not maintain live current speed
@@ -708,7 +985,11 @@ export default function App() {
           );
 
         } catch (error) {
-          console.log('Recording sync error:', error);
+
+          console.log(
+            'Recording sync error:',
+            error
+          );
         }
       }
     );
@@ -717,27 +998,44 @@ export default function App() {
 
   }, [isTracking]);
 
+  // --------------------------------
   // Update running duration every second
+  // --------------------------------
+
   useEffect(() => {
+
     if (!isTracking) return;
 
     const timer = setInterval(() => {
+
       if (startTimeRef.current !== null) {
-        const elapsed = Math.floor(
-          (Date.now() - startTimeRef.current) / 1000
+
+        const elapsed = calculateActiveDuration(
+          startTimeRef.current,
+          totalPausedMsRef.current,
+          pauseStartedAtMsRef.current,
+          isPausedRef.current
         );
 
         setDurationSeconds(elapsed);
       }
+
     }, 1000);
 
     return () => clearInterval(timer);
+
   }, [isTracking]);
 
+  // --------------------------------
   // Initialize database and load saved rides
+  // --------------------------------
+
   useEffect(() => {
+
     const loadDatabase = async () => {
+
       try {
+
         await initRideDatabase();
 
         const rides = await getSavedRides();
@@ -754,46 +1052,70 @@ export default function App() {
         console.log('Total distance:', total);
 
       } catch (error) {
-        console.log('Database error:', error);
+
+        console.log(
+          'Database error:',
+          error
+        );
       }
     };
 
     loadDatabase();
+
   }, []);
 
+  // --------------------------------
+  // UI
+  // --------------------------------
+
   return (
+
     <View style={styles.appContainer}>
 
       {/* Ride Details Screen */}
       {selectedRide ? (
+
         <RideDetailsScreen
           ride={selectedRide}
           onBack={() => setSelectedRide(null)}
         />
+
       ) : activeTab === 'home' ? (
 
         /* HOME SCREEN */
+
         <>
+
           <View style={styles.container}>
-            <StatusBar
-              barStyle="light-content"
-            />
+
+            <StatusBar barStyle="light-content" />
 
             <ScrollView contentContainerStyle={styles.content}>
 
               {/* Header */}
+
               <View style={styles.header}>
+
                 <View>
-                  <Text style={styles.logo}>TRACKMATE</Text>
+
+                  <Text style={styles.logo}>
+                    TRACKMATE
+                  </Text>
+
                   <Text style={styles.subtitle}>
                     Your journey, your pace.
                   </Text>
+
                 </View>
 
-                <Text style={styles.profile}>🚴</Text>
+                <Text style={styles.profile}>
+                  🚴
+                </Text>
+
               </View>
 
               {/* Welcome */}
+
               <Text style={styles.welcome}>
                 Ready to ride?
               </Text>
@@ -803,25 +1125,33 @@ export default function App() {
               </Text>
 
               {/* Main Distance Card */}
+
               <View style={styles.distanceCard}>
+
                 <Text style={styles.cardLabel}>
                   TOTAL DISTANCE
                 </Text>
 
                 <View style={styles.distanceRow}>
+
                   <Text style={styles.distance}>
                     {totalDistance.toFixed(2)}
                   </Text>
 
-                  <Text style={styles.unit}> km</Text>
+                  <Text style={styles.unit}>
+                    {' '}km
+                  </Text>
+
                 </View>
 
                 <Text style={styles.muted}>
                   Your next adventure starts here
                 </Text>
+
               </View>
 
               {/* Statistics */}
+
               <Text style={styles.sectionTitle}>
                 Ride statistics
               </Text>
@@ -829,7 +1159,10 @@ export default function App() {
               <View style={styles.statsGrid}>
 
                 <View style={styles.statCard}>
-                  <Text style={styles.statIcon}>⚡</Text>
+
+                  <Text style={styles.statIcon}>
+                    ⚡
+                  </Text>
 
                   <Text style={styles.statValue}>
                     {currentSpeed.toFixed(1)} km/h
@@ -838,10 +1171,14 @@ export default function App() {
                   <Text style={styles.statLabel}>
                     Current speed
                   </Text>
+
                 </View>
 
                 <View style={styles.statCard}>
-                  <Text style={styles.statIcon}>🏁</Text>
+
+                  <Text style={styles.statIcon}>
+                    🏁
+                  </Text>
 
                   <Text style={styles.statValue}>
                     {maxSpeed.toFixed(1)} km/h
@@ -850,10 +1187,14 @@ export default function App() {
                   <Text style={styles.statLabel}>
                     Maximum speed
                   </Text>
+
                 </View>
 
                 <View style={styles.statCard}>
-                  <Text style={styles.statIcon}>📊</Text>
+
+                  <Text style={styles.statIcon}>
+                    📊
+                  </Text>
 
                   <Text style={styles.statValue}>
                     {liveAverageSpeed.toFixed(1)} km/h
@@ -862,10 +1203,14 @@ export default function App() {
                   <Text style={styles.statLabel}>
                     Average speed
                   </Text>
+
                 </View>
 
                 <View style={styles.statCard}>
-                  <Text style={styles.statIcon}>⏱️</Text>
+
+                  <Text style={styles.statIcon}>
+                    ⏱️
+                  </Text>
 
                   <Text style={styles.statValue}>
                     {formatDuration(durationSeconds)}
@@ -874,13 +1219,18 @@ export default function App() {
                   <Text style={styles.statLabel}>
                     Duration
                   </Text>
+
                 </View>
 
               </View>
 
               {/* Current Run Distance */}
+
               <View style={styles.statCard}>
-                <Text style={styles.statIcon}>📍</Text>
+
+                <Text style={styles.statIcon}>
+                  📍
+                </Text>
 
                 <Text style={styles.statValue}>
                   {distanceKm.toFixed(2)} km
@@ -889,21 +1239,54 @@ export default function App() {
                 <Text style={styles.statLabel}>
                   Current run distance
                 </Text>
+
               </View>
 
+              {/* Pause / Resume Button */}
+
+              {isTracking && (
+
+                <TouchableOpacity
+                  style={[
+                    styles.pauseButton,
+                    isPaused && styles.resumeButton
+                  ]}
+                  onPress={
+                    isPaused
+                      ? resumeTracking
+                      : pauseTracking
+                  }
+                  activeOpacity={0.8}
+                >
+
+                  <Text style={styles.pauseButtonText}>
+                    {isPaused
+                      ? '▶ RESUME TRACKING'
+                      : 'Ⅱ PAUSE TRACKING'}
+                  </Text>
+
+                </TouchableOpacity>
+
+              )}
+
               {/* Start / Stop Button */}
+
               <TouchableOpacity
                 style={styles.startButton}
                 onPress={
-                  isTracking ? stopTracking : startTracking
+                  isTracking
+                    ? stopTracking
+                    : startTracking
                 }
                 activeOpacity={0.8}
               >
+
                 <Text style={styles.startButtonText}>
                   {isTracking
                     ? '■ STOP TRACKING'
                     : '▶ START RECORDING'}
                 </Text>
+
               </TouchableOpacity>
 
               <Text style={styles.footer}>
@@ -911,7 +1294,9 @@ export default function App() {
               </Text>
 
               {/* Live GPS Information */}
+
               <View style={styles.distanceCard}>
+
                 <Text style={styles.cardLabel}>
                   LIVE GPS INFORMATION
                 </Text>
@@ -953,15 +1338,19 @@ export default function App() {
                 <Text style={styles.statValue}>
                   {currentSpeed.toFixed(1)} km/h
                 </Text>
+
               </View>
 
             </ScrollView>
+
           </View>
+
         </>
 
       ) : (
 
         /* HISTORY SCREEN */
+
         <RunningHistoryScreen
           onRidePress={(ride) => {
             setSelectedRide(ride);
@@ -971,13 +1360,16 @@ export default function App() {
       )}
 
       {/* Bottom Navigation */}
+
       {!selectedRide && (
+
         <View style={styles.bottomNav}>
 
           <TouchableOpacity
             style={styles.navButton}
             onPress={() => setActiveTab('home')}
           >
+
             <Text
               style={
                 activeTab === 'home'
@@ -987,12 +1379,14 @@ export default function App() {
             >
               🏠 Home
             </Text>
+
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.navButton}
             onPress={() => setActiveTab('history')}
           >
+
             <Text
               style={
                 activeTab === 'history'
@@ -1002,28 +1396,35 @@ export default function App() {
             >
               📋 History
             </Text>
+
           </TouchableOpacity>
 
         </View>
+
       )}
 
     </View>
   );
 }
 
+// --------------------------------
 // Calculate distance between two GPS coordinates
+// --------------------------------
+
 function calculateDistance(
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
 ) {
+
   const earthRadius = 6371;
 
   const toRadians = (value: number) =>
     (value * Math.PI) / 180;
 
   const dLat = toRadians(lat2 - lat1);
+
   const dLon = toRadians(lon2 - lon1);
 
   const a =
@@ -1033,15 +1434,24 @@ function calculateDistance(
     Math.sin(dLon / 2) ** 2;
 
   const c =
-    2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    2 * Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a)
+    );
 
   return earthRadius * c;
 }
 
+// --------------------------------
 // Format duration into HH:MM:SS
+// --------------------------------
+
 function formatDuration(seconds: number) {
+
   const hours = Math.floor(seconds / 3600);
+
   const minutes = Math.floor((seconds % 3600) / 60);
+
   const remainingSeconds = seconds % 60;
 
   return [
@@ -1049,12 +1459,18 @@ function formatDuration(seconds: number) {
     minutes,
     remainingSeconds,
   ]
-    .map((value) => String(value).padStart(2, '0'))
+    .map((value) =>
+      String(value).padStart(2, '0')
+    )
     .join(':');
 }
 
+// --------------------------------
 // Styles
+// --------------------------------
+
 const styles = StyleSheet.create({
+
   container: {
     flex: 1,
     backgroundColor: '#101827',
@@ -1182,10 +1598,29 @@ const styles = StyleSheet.create({
     padding: 19,
     borderRadius: 15,
     alignItems: 'center',
-    marginTop: 30,
+    marginTop: 15,
   },
 
   startButtonText: {
+    color: '#101827',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  pauseButton: {
+    backgroundColor: '#FBBF24',
+    padding: 19,
+    borderRadius: 15,
+    alignItems: 'center',
+    marginTop: 30,
+  },
+
+  resumeButton: {
+    backgroundColor: '#38BDF8',
+  },
+
+  pauseButtonText: {
     color: '#101827',
     fontSize: 15,
     fontWeight: '900',
@@ -1231,4 +1666,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
   },
+
 });
