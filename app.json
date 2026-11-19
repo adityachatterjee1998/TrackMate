@@ -17,12 +17,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.aditya_chatterjee.TrackMate",
-      "config": {
-    "googleMaps": {
-      "apiKey": "AIzaSyDWtE_SzIKvWNrMaTrthuftcackCN9VeH8"
-    }
-  }
+      "package": "com.aditya_chatterjee.TrackMate"
     },
     "web": {
       "favicon": "./assets/favicon.png"

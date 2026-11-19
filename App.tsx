@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 import RunningHistoryScreen from './src/screens/HistoryScreen';
+import './src/services/backgroundLocation';
 
 import RideDetailsScreen, {
   type Ride,
@@ -135,18 +136,26 @@ export default function App() {
 
           lastLocationRef.current = coords;
 
-          // Calculate current speed
-          const speed = Math.max(
-            0,
-            (coords.speed ?? 0) * 3.6
-          );
+          // Calculate GPS speed
+          const rawSpeed = coords.speed ?? 0;
+          const speed = rawSpeed * 3.6;
 
-          setCurrentSpeed(speed);
+          // Filter unreliable GPS speed
+          const isValidSpeed =
+            coords.accuracy !== null &&
+            coords.accuracy <= 20 &&
+            speed >= 1 &&
+            speed <= 40;
 
-          // Calculate maximum speed
-          if (speed > maxSpeedRef.current) {
-            maxSpeedRef.current = speed;
-            setMaxSpeed(speed);
+          if (isValidSpeed) {
+            setCurrentSpeed(speed);
+
+            if (speed > maxSpeedRef.current) {
+              maxSpeedRef.current = speed;
+              setMaxSpeed(speed);
+            }
+          } else {
+            setCurrentSpeed(0);
           }
         }
       );
